@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { api, pollExpenses, type Expense as ApiExpense } from './api';
 import {
   Plus,
   Search,
@@ -116,6 +117,40 @@ export default function App() {
   
   // Requirement: Everything starts at 0 until user adds data!
   const [expenses, setExpenses] = useState<Expense[]>([]);
+
+  // Load the shared backend database so expenses added by Claude appear here.
+  useEffect(() => {
+    const toDashboardExpense = (row: ApiExpense): Expense => {
+      const d = new Date(`${row.date}T12:00:00`);
+      const category = row.category.toLowerCase();
+      const categoryId =
+        category.includes('food') || category.includes('lunch') || category.includes('coffee') || category.includes('dining') ? 'food' :
+        category.includes('transport') || category.includes('petrol') || category.includes('travel') ? 'travel' :
+        category.includes('shop') || category.includes('grocer') ? 'shopping' :
+        category.includes('home') || category.includes('rent') ? 'home' :
+        category.includes('sub') || category.includes('entertain') ? 'subs' : 'misc';
+      const monthName = d.toLocaleString('en-IN', { month: 'long' });
+      const dayOfWeek = d.toLocaleString('en-IN', { weekday: 'long' });
+      return {
+        id: row.id,
+        title: row.notes || row.merchant,
+        merchant: row.merchant,
+        year: d.getFullYear(),
+        month: d.getMonth(),
+        monthName,
+        day: d.getDate(),
+        fullDate: row.date,
+        dayOfWeek,
+        time: new Date(row.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        categoryId,
+        amount: row.amount,
+        totalBill: row.amount,
+        isSplit: false,
+        notes: row.notes || undefined
+      };
+    };
+    return pollExpenses((rows) => setExpenses(rows.map(toDashboardExpense)), 4000);
+  }, []);
 
   // Total budget target (editable)
   const [customTotalBudget, setCustomTotalBudget] = useState<number>(75000);
@@ -354,9 +389,14 @@ export default function App() {
   }, [filteredExpenses]);
 
   // Delete single expense
-  const handleDeleteExpense = (id: string) => {
-    setExpenses((prev) => prev.filter((e) => e.id !== id));
-    triggerToast('Expense deleted');
+  const handleDeleteExpense = async (id: string) => {
+    try {
+      await api.remove(id);
+      setExpenses((prev) => prev.filter((e) => e.id !== id));
+      triggerToast('Expense deleted');
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : 'Could not delete expense');
+    }
   };
 
   return (
@@ -1252,7 +1292,7 @@ export default function App() {
             </div>
 
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 if (!expenseTitle.trim()) {
                   triggerToast('Please enter what you spent on');
@@ -1291,9 +1331,21 @@ export default function App() {
                   notes: expenseNotes.trim() || undefined
                 };
 
-                setExpenses((prev) => [newExp, ...prev]);
-                setIsAddExpenseModalOpen(false);
-                triggerToast(`Logged ₹${parsedAmount.toLocaleString('en-IN')} for ${newExp.title}!`);
+                try {
+                  await api.create({
+                    merchant: newExp.merchant,
+                    amount: newExp.amount,
+                    currency: 'INR',
+                    category: newExp.categoryId,
+                    date: newExp.fullDate,
+                    notes: newExp.title + (newExp.notes ? ` — ${newExp.notes}` : ''),
+                    status: 'pending'
+                  });
+                  setIsAddExpenseModalOpen(false);
+                  triggerToast(`Logged ₹${parsedAmount.toLocaleString('en-IN')} for ${newExp.title}!`);
+                } catch (error) {
+                  triggerToast(error instanceof Error ? error.message : 'Could not save expense');
+                }
               }}
               className="space-y-3.5 text-xs font-bold"
             >
